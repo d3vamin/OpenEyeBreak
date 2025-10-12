@@ -185,7 +185,7 @@ class BreakNotificationWindow(QFrame):
                  initial_time_value, is_test_mode,
                  bg_color, text_color, opacity, position,
                  restrict_long_break, restrict_short_break, # NEW PARAMETERS
-                 alarm_sound_alias=None, force_on_top=True):
+                 alarm_sound_alias=None, force_on_top=True, show_advice=True):
         super().__init__()
         self.setAttribute(Qt.WA_DeleteOnClose, True) # Ensure the window is deleted when closed
         self.parent_widget = parent_widget # TimerWidget instance
@@ -193,6 +193,7 @@ class BreakNotificationWindow(QFrame):
         self.is_test = is_test_mode
         self.test_timer = None
         self.alarm_sound_alias = alarm_sound_alias
+        self.show_advice = show_advice
         
         # NEW: Determine if the dismiss button should be restricted
         is_restricted = False
@@ -205,18 +206,36 @@ class BreakNotificationWindow(QFrame):
         advice_font = QFont("Arial", 14, QFont.Bold) 
         timer_font = QFont("Arial", 36, QFont.Bold)
         font_metrics = QFontMetrics(advice_font)
-        advice_width = font_metrics.size(Qt.TextSingleLine, advice_message).width()
 
         HORIZONTAL_PADDING = 10 * 2 + 20 
-        ADVICE_HEIGHT = font_metrics.height()
+
+        # Calculate width based on whether advice is shown
+        if show_advice:
+            advice_width = font_metrics.size(Qt.TextSingleLine, advice_message).width()
+            new_width = max(350, min(advice_width + HORIZONTAL_PADDING, 800))
+            ADVICE_HEIGHT = font_metrics.height()
+        else:
+            # When no advice, size based on button text if button exists
+            if not is_restricted:
+                button_font = QFont("Arial", 10, QFont.Bold)  # Default button font
+                button_metrics = QFontMetrics(button_font)
+                button_text_width = button_metrics.size(Qt.TextSingleLine, "Dismiss Notification").width()
+                new_width = max(280, button_text_width + HORIZONTAL_PADDING + 20)  # Extra padding for button
+            else:
+                # No advice and no button - minimal width for timer only
+                new_width = 280
+            ADVICE_HEIGHT = 0
+
         TIMER_HEIGHT = QFontMetrics(timer_font).height()
-        
+
         # Adjust height based on whether the button is shown
         BUTTON_HEIGHT = 40 if not is_restricted else 0 
-        
-        VERTICAL_CONTENT_HEIGHT = ADVICE_HEIGHT + 5 + TIMER_HEIGHT + 10 + BUTTON_HEIGHT
-        new_height = VERTICAL_CONTENT_HEIGHT + 20 
-        new_width = max(350, min(advice_width + HORIZONTAL_PADDING, 800))
+
+        # Adjust spacing based on whether advice is shown
+        ADVICE_SPACING = 5 if show_advice else 0
+
+        VERTICAL_CONTENT_HEIGHT = ADVICE_HEIGHT + ADVICE_SPACING + TIMER_HEIGHT + 10 + BUTTON_HEIGHT
+        new_height = VERTICAL_CONTENT_HEIGHT + 20
         
         self.setFixedSize(new_width, new_height) 
         
@@ -269,11 +288,19 @@ class BreakNotificationWindow(QFrame):
         layout.setSpacing(5) 
 
         # Advice Label
-        advice_label = QLabel(advice_message)
-        advice_label.setFont(advice_font) 
-        advice_label.setAlignment(Qt.AlignCenter)
-        advice_label.setWordWrap(False)
-        layout.addWidget(advice_label)
+        if self.show_advice:
+            self.advice_label = QLabel(advice_message) # <-- Use self.advice_label for reference
+            self.advice_label.setFont(advice_font) 
+            self.advice_label.setAlignment(Qt.AlignCenter)
+            self.advice_label.setWordWrap(True) # Use True for better wrapping
+            
+            # Advice text styling
+            advice_font = QFont("Arial", 14)
+            advice_font.setItalic(True)
+            self.advice_label.setFont(advice_font)
+
+            # Add advice label to the local layout
+            layout.addWidget(self.advice_label) 
         
         # --- Time Logic Setup ---
         if self.is_test:
@@ -299,15 +326,14 @@ class BreakNotificationWindow(QFrame):
         # Dismiss Button (Only add if not restricted)
         if not is_restricted:
             self.dismiss_button = QPushButton("Dismiss Notification")
-            self.dismiss_button.setFixedSize(new_width - 20, 40)
+            # Calculate button width: full width minus margins if advice shown, or match content width if no advice
+            button_width = new_width - 20
+            self.dismiss_button.setFixedSize(button_width, 40)
             
             # Connect button to the external close handler
             self.dismiss_button.clicked.connect(self.parent_widget.close_notification_window)
             
             layout.addWidget(self.dismiss_button, alignment=Qt.AlignCenter)
-        else:
-            self.dismiss_button = None
-            layout.addStretch(1) # Add stretch to fill space if button is gone
         
         self._position_on_screen(position)
         self.show()
@@ -405,7 +431,9 @@ class OpenEyeBreakApp(QMainWindow):
             'notif_position': "Center",
             'restrict_long_break': False,
             'restrict_short_break': False,
-            'gaming_mode': False       # NEW: Gaming Mode setting
+            'gaming_mode': False,       # NEW: Gaming Mode setting
+            'show_advice_long': True,
+            'show_advice_short': True
         }
         
         # Store the base window flags
@@ -1152,6 +1180,13 @@ class TimerWidget(QWidget):
         
         colors = self.get_colors()
 
+        # Determine break type using timer logic
+        is_long_break_live = self.timer_logic.is_long_break
+
+        # Determine if advice should be shown
+        show_advice_flag = (self.main_window.settings['show_advice_long'] if self.timer_logic.is_long_break 
+                    else self.main_window.settings['show_advice_short'])
+
         # Determine if the window should be forced on top
         is_gaming_scenario = (self.main_window.settings.get('gaming_mode', True) and
                               self._is_fullscreen_app_running())
@@ -1185,7 +1220,8 @@ class TimerWidget(QWidget):
             colors['NOTIF_POSITION'],
             restrict_long,                       # NEW
             restrict_short,                       # NEW
-            force_on_top=force_on_top_flag
+            force_on_top=force_on_top_flag,
+            show_advice=show_advice_flag
         )
         
     @Slot()
@@ -1211,7 +1247,7 @@ class TimerWidget(QWidget):
 
         
     def test_break(self, is_long_break, opacity=None, position=None,
-                   restrict_long=None, restrict_short=None): # NEW PARAMETERS
+                   restrict_long=None, restrict_short=None, show_advice=None): # NEW PARAMETERS
         """
         Immediately triggers a test break window with a counting down timer.
         """
@@ -1268,7 +1304,9 @@ class TimerWidget(QWidget):
             test_position,
             test_restrict_long,  # NEW
             test_restrict_short, # NEW
-            alarm_sound    # Pass sound alias for end sound
+            alarm_sound, # Pass sound alias for end sound
+            True,
+            show_advice=show_advice if show_advice is not None else True  # Use the provided value or default to True
         )
 
 # ----------------------------------------------------------------------
@@ -1381,6 +1419,14 @@ class SettingsWidget(QWidget):
         content_layout.addWidget(QLabel("<b>Long Break Settings</b>"))
         self._create_setting(content_layout, "Long Break Duration:", 'long_break_min', "minutes", 1, 30)
         self._create_setting(content_layout, "Take a Long Break After:", 'breaks_until_long', "short breaks", 2, 10)
+
+        # Show Advice checkbox
+        self.checkbox_show_advice_long = self._create_checkbox_setting(
+            content_layout, 
+            "Show Advice", 
+            'show_advice_long', 
+            self.temp_settings.get('show_advice_long', True)
+        )
         
         # Restrict Mode Checkbox for Long Break
         self.checkbox_restrict_long_break = self._create_checkbox_setting(
@@ -1396,6 +1442,14 @@ class SettingsWidget(QWidget):
         content_layout.addWidget(QLabel("<b>Short Break Settings</b>"))
         self._create_setting(content_layout, "Take a short break every:", 'short_work_min', "minutes", 1, 60)
         self._create_setting(content_layout, "For:", 'short_break_sec', "seconds", 10, 59)
+
+        # Show Advice checkbox
+        self.checkbox_show_advice_short = self._create_checkbox_setting(
+            content_layout, 
+            "Show Advice", 
+            'show_advice_short', 
+            self.temp_settings.get('show_advice_short', True)
+        )
 
         # NEW: Restrict Mode Checkbox for Short Break
         self.checkbox_restrict_short_break = self._create_checkbox_setting(
@@ -1493,7 +1547,8 @@ class SettingsWidget(QWidget):
                 opacity=self.opacity_slider.value(), 
                 position=self.position_picker.currentText(),
                 restrict_long=self.checkbox_restrict_long_break.isChecked(), # NEW
-                restrict_short=self.checkbox_restrict_short_break.isChecked() # NEW
+                restrict_short=self.checkbox_restrict_short_break.isChecked(), # NEW
+                show_advice=self.checkbox_show_advice_short.isChecked()
             )
         )
         try_long_btn.clicked.connect(
@@ -1502,7 +1557,8 @@ class SettingsWidget(QWidget):
                 opacity=self.opacity_slider.value(), 
                 position=self.position_picker.currentText(),
                 restrict_long=self.checkbox_restrict_long_break.isChecked(), # NEW
-                restrict_short=self.checkbox_restrict_short_break.isChecked() # NEW
+                restrict_short=self.checkbox_restrict_short_break.isChecked(), # NEW
+                show_advice=self.checkbox_show_advice_long.isChecked()
             )
         )
         
@@ -1569,6 +1625,10 @@ class SettingsWidget(QWidget):
         self.checkbox_restrict_long_break.setChecked(self.temp_settings.get('restrict_long_break', False))
         self.checkbox_restrict_short_break.setChecked(self.temp_settings.get('restrict_short_break', False))
 
+        # Load show advice settings
+        self.checkbox_show_advice_long.setChecked(self.temp_settings.get('show_advice_long', True))
+        self.checkbox_show_advice_short.setChecked(self.temp_settings.get('show_advice_short', True))
+
 
     def _create_setting(self, layout, label_text, key, unit, minval, maxval):
         frame = QWidget()
@@ -1634,6 +1694,10 @@ class SettingsWidget(QWidget):
         # NEW: Collect restrict mode settings
         settings['restrict_long_break'] = self.checkbox_restrict_long_break.isChecked()
         settings['restrict_short_break'] = self.checkbox_restrict_short_break.isChecked()
+
+        # Collect show advice settings
+        settings['show_advice_long'] = self.checkbox_show_advice_long.isChecked()
+        settings['show_advice_short'] = self.checkbox_show_advice_short.isChecked()
         
         return settings
 
