@@ -621,7 +621,18 @@ class OpenEyeBreakApp(QMainWindow):
     # --- System Tray Implementation ---
     def setup_system_tray(self):
         """Initialize the system tray icon and menu"""
-        icon_path = "resources/icon.png"
+        import os
+        import sys
+        
+        # Get the correct path for the icon whether running as script or exe
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            base_path = sys._MEIPASS
+        else:
+            # Running as script
+            base_path = os.path.dirname(os.path.abspath(__file__))
+        
+        icon_path = os.path.join(base_path, "resources", "icon.ico")
         app_icon = QIcon(icon_path)
         
         # Set application icon
@@ -1802,7 +1813,16 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     
     # Set application-wide icon
-    app_icon = QIcon("resources/icon.png")
+    import os
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        base_path = sys._MEIPASS
+    else:
+        # Running as script
+        base_path = os.path.dirname(os.path.abspath(__file__))
+
+    icon_path = os.path.join(base_path, "resources", "icon.ico")
+    app_icon = QIcon(icon_path)
     app.setWindowIcon(app_icon)
     
     window = OpenEyeBreakApp()
