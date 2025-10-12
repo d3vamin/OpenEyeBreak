@@ -43,6 +43,74 @@ THEMES = {
     "System": None # Will use OS/Qt defaults
 }
 
+def get_windows_system_sounds():
+    """Query available Windows system sounds from the registry."""
+    import winreg
+    
+    sounds = {}
+    
+    try:
+        # Open the Windows registry key for system sounds
+        key_path = r"AppEvents\Schemes\Apps\.Default"
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path)
+        
+        # Common system sounds that are likely to exist
+        sound_names = [
+            ("SystemExclamation", "Exclamation"),
+            ("SystemHand", "Critical Stop"),
+            ("SystemAsterisk", "Asterisk"),
+            ("SystemQuestion", "Question"),
+            ("SystemNotification", "Notification"),
+            ("SystemDefault", "Default Beep"),
+            (".Default", "Default"),
+            ("SystemWelcome", "Windows Logon"),
+            ("SystemExit", "Windows Logoff"),
+            ("MailBeep", "New Mail Notification"),
+            ("AppGPFault", "Program Error"),
+            ("Close", "Close Program"),
+            ("Maximize", "Maximize"),
+            ("MenuCommand", "Menu Command"),
+            ("MenuPopup", "Menu Popup"),
+            ("Minimize", "Minimize"),
+            ("Open", "Open Program"),
+            ("RestoreDown", "Restore Down"),
+            ("RestoreUp", "Restore Up"),
+        ]
+        
+        # Try each sound and add it if it exists
+        for alias, display_name in sound_names:
+            try:
+                # Try to open the sound's subkey
+                sound_key = winreg.OpenKey(key, f"{alias}\\.Current")
+                # If successful, add to our dictionary
+                sounds[display_name] = alias
+                winreg.CloseKey(sound_key)
+            except WindowsError:
+                # Sound doesn't exist, skip it
+                pass
+        
+        winreg.CloseKey(key)
+        
+    except Exception as e:
+        print(f"Error querying system sounds: {e}")
+        # Return default sounds as fallback
+        return {
+            "Exclamation": "SystemExclamation",
+            "Critical Stop": "SystemHand",
+            "Default Beep": "SystemDefault",
+        }
+    
+    # If no sounds found, return defaults
+    if not sounds:
+        sounds = {
+            "Exclamation": "SystemExclamation",
+            "Critical Stop": "SystemHand",
+            "Default Beep": "SystemDefault",
+        }
+    
+    return sounds
+
+
 # ----------------------------------------------------------------------
 # --- BREAK ADVICE LISTS ---
 # ----------------------------------------------------------------------
@@ -74,12 +142,8 @@ LONG_BREAK_ADVICE = [
 # ----------------------------------------------------------------------
 
 class TimerLogic:
-    SOUND_OPTIONS = {
-        "1. Exclamation (Default)": "SystemExclamation",
-        "2. Error/Stop": "SystemHand",
-        "3. Windows Default": "SystemDefault",
+    SOUND_OPTIONS = get_windows_system_sounds()
     
-    }
     
     def __init__(self, settings):
         self.settings = settings
@@ -425,7 +489,7 @@ class OpenEyeBreakApp(QMainWindow):
             'long_break_min': 5,      
             'breaks_until_long': 3,    # NEW: Number of short breaks before long break
             'enable_sound': True,
-            'alarm_sound': TimerLogic.SOUND_OPTIONS["1. Exclamation (Default)"], 
+            'alarm_sound': TimerLogic.SOUND_OPTIONS.get("Exclamation", "SystemExclamation"), 
             'theme': "Dark",
             'notif_opacity': 50,      
             'notif_position': "Center",
@@ -1246,7 +1310,7 @@ class TimerWidget(QWidget):
             self.notification_window = None
 
         
-    def test_break(self, is_long_break, opacity=None, position=None,
+    def test_break(self, is_long_break, opacity=None, position=None, short_break_sec=None, long_break_min=None,
                    restrict_long=None, restrict_short=None, show_advice=None): # NEW PARAMETERS
         """
         Immediately triggers a test break window with a counting down timer.
@@ -1269,14 +1333,16 @@ class TimerWidget(QWidget):
             # LONG BREAK TEST
             advice = random.choice(LONG_BREAK_ADVICE)
             bg_color = colors['RED'] 
-            # Calculate time from minutes setting
-            total_seconds = self.main_window.settings['long_break_min'] * 60
+            # Calculate time from preview parameter or fall back to applied settings
+            preview_long_break_min = long_break_min if long_break_min is not None else self.main_window.settings['long_break_min']
+            total_seconds = preview_long_break_min * 60
         else:
             # SHORT BREAK TEST
             advice = random.choice(BREAK_ADVICE)
             bg_color = colors['ACCENT'] 
-            # Calculate time from seconds setting
-            total_seconds = self.main_window.settings['short_break_sec']
+            # Calculate time from preview parameter or fall back to applied settings
+            preview_short_break_sec = short_break_sec if short_break_sec is not None else self.main_window.settings['short_break_sec']
+            total_seconds = preview_short_break_sec
 
         text_color = "white"
         test_opacity = opacity if opacity is not None else colors['NOTIF_OPACITY']
@@ -1548,7 +1614,8 @@ class SettingsWidget(QWidget):
                 position=self.position_picker.currentText(),
                 restrict_long=self.checkbox_restrict_long_break.isChecked(), # NEW
                 restrict_short=self.checkbox_restrict_short_break.isChecked(), # NEW
-                show_advice=self.checkbox_show_advice_short.isChecked()
+                show_advice=self.checkbox_show_advice_short.isChecked(),
+                short_break_sec=self.spin_short_break_sec.value()  # Pass unapplied short break duration
             )
         )
         try_long_btn.clicked.connect(
@@ -1558,7 +1625,8 @@ class SettingsWidget(QWidget):
                 position=self.position_picker.currentText(),
                 restrict_long=self.checkbox_restrict_long_break.isChecked(), # NEW
                 restrict_short=self.checkbox_restrict_short_break.isChecked(), # NEW
-                show_advice=self.checkbox_show_advice_long.isChecked()
+                show_advice=self.checkbox_show_advice_long.isChecked(),
+                long_break_min=self.spin_long_break_min.value()  # Pass unapplied long break duration
             )
         )
         
@@ -1606,7 +1674,7 @@ class SettingsWidget(QWidget):
         self.sound_enable_cb.setChecked(self.temp_settings['enable_sound'])
         current_display_name = next(
             (k for k, v in TimerLogic.SOUND_OPTIONS.items() if v == self.temp_settings['alarm_sound']), 
-            "1. Exclamation (Default)"
+            list(TimerLogic.SOUND_OPTIONS.keys())[0] if TimerLogic.SOUND_OPTIONS else "Exclamation"
         )
         self.sound_picker.setCurrentText(current_display_name)
         
