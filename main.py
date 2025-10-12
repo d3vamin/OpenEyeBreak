@@ -181,16 +181,13 @@ class BreakNotificationWindow(QFrame):
     Non-modal, passive display window for both short and long breaks (Live or Test).
     It is updated and dismissed externally by the TimerWidget.
     """
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        # Ensure the window is deleted when closed
-        self.setAttribute(Qt.WA_DeleteOnClose, True)
     def __init__(self, parent_widget, is_long_break, advice_message, 
                  initial_time_value, is_test_mode,
                  bg_color, text_color, opacity, position,
                  restrict_long_break, restrict_short_break, # NEW PARAMETERS
-                 alarm_sound_alias=None):
+                 alarm_sound_alias=None, force_on_top=True):
         super().__init__()
+        self.setAttribute(Qt.WA_DeleteOnClose, True) # Ensure the window is deleted when closed
         self.parent_widget = parent_widget # TimerWidget instance
         self.is_long_break = is_long_break
         self.is_test = is_test_mode
@@ -224,13 +221,18 @@ class BreakNotificationWindow(QFrame):
         self.setFixedSize(new_width, new_height) 
         
         # --- WINDOW SETUP ---
-        # Set window flags to ensure notification stays on top but remains interactive
-        self.setWindowFlags(
+        # Initialize window_flags with base flags
+        window_flags = (
             Qt.Window |                    # Base window flag
-            Qt.WindowStaysOnTopHint |      # Stay on top of normal windows
             Qt.FramelessWindowHint |       # No window frame
             Qt.Tool                        # Tool window (no taskbar entry)
         )
+
+        if force_on_top:
+            window_flags |= Qt.WindowStaysOnTopHint # Add the "on top" hint only if requested
+
+        self.setWindowFlags(window_flags)
+
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)  # Don't steal focus
         
@@ -1022,12 +1024,8 @@ class TimerWidget(QWidget):
         if phase_switched:
             # If the phase is now a break
             if self.timer_logic.is_break():
-                is_long_break = self.timer_logic.is_long_break
-                # Check for Gaming Mode and fullscreen apps
-                if self.main_window.settings.get('gaming_mode', True) and self._is_fullscreen_app_running():
-                    self._show_minimized_break_notification(is_long_break)
-                else:
-                    self.show_break_window()
+
+                self.show_break_window()
             # If the phase is now work (break just ended)
             else:
                 # Play the end-of-break sound (END SOUND for live)
@@ -1153,6 +1151,11 @@ class TimerWidget(QWidget):
             self.main_window.play_alarm(self.main_window.settings['alarm_sound'])
         
         colors = self.get_colors()
+
+        # Determine if the window should be forced on top
+        is_gaming_scenario = (self.main_window.settings.get('gaming_mode', True) and
+                              self._is_fullscreen_app_running())
+        force_on_top_flag = not is_gaming_scenario
         
         if self.timer_logic.is_long_break:
             # LONG BREAK
@@ -1181,7 +1184,8 @@ class TimerWidget(QWidget):
             colors['NOTIF_OPACITY'],    
             colors['NOTIF_POSITION'],
             restrict_long,                       # NEW
-            restrict_short                       # NEW
+            restrict_short,                       # NEW
+            force_on_top=force_on_top_flag
         )
         
     @Slot()
