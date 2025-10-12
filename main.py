@@ -6,10 +6,13 @@ import random
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QPushButton, QComboBox, QSpinBox, QCheckBox, QSlider,
-    QMessageBox, QFrame, QStackedWidget 
+    QMessageBox, QFrame, QStackedWidget, QSystemTrayIcon, QMenu
 )
 from PySide6.QtCore import Qt, QTimer, Slot, QSize, QRect, QTime
-from PySide6.QtGui import QFont, QColor, QPalette, QGuiApplication, QFontMetrics
+from PySide6.QtGui import QFont, QColor, QPalette, QGuiApplication, QFontMetrics, QIcon
+
+import ctypes
+from ctypes import wintypes
 
 # ----------------------------------------------------------------------
 # --- THEME AND COLOR DEFINITIONS ---
@@ -73,12 +76,9 @@ LONG_BREAK_ADVICE = [
 class TimerLogic:
     SOUND_OPTIONS = {
         "1. Exclamation (Default)": "SystemExclamation",
-        "2. Asterisk/Info": "SystemAsterisk",
-        "3. Error/Stop": "SystemHand",
-        "4. Question": "SystemQuestion",
-        "5. Windows Default": "SystemDefault",
-        "6. Notification": "SystemNotification",
-        "7. Simple Beep": "SystemBeep"
+        "2. Error/Stop": "SystemHand",
+        "3. Windows Default": "SystemDefault",
+    
     }
     
     def __init__(self, settings):
@@ -97,6 +97,16 @@ class TimerLogic:
         
     def stop(self):
         self.is_running = False
+        
+    def move_to_next_work_timer(self):
+        """Moves to the next work timer while maintaining the current cycle count."""
+        self.is_running = False
+        self.is_short_break = False
+        self.is_long_break = False
+        # Start the next work timer
+        self.current_seconds = self.settings['short_work_min'] * 60
+        # Note: work_cycle_count is already incremented when break started
+        self.is_running = True
         
     def tick(self):
         if not self.is_running:
@@ -117,7 +127,7 @@ class TimerLogic:
     def start_break(self):
         self.work_cycle_count += 1
         
-        if self.work_cycle_count % 3 == 0:
+        if self.work_cycle_count % self.settings['breaks_until_long'] == 0:
             self.is_long_break = True
             self.is_short_break = False
             self.current_seconds = self.settings['long_break_min'] * 60
@@ -129,18 +139,13 @@ class TimerLogic:
     def end_break(self):
         self.is_short_break = False
         self.is_long_break = False
-        
-        if self.work_cycle_count % 3 == 0:
-            self.current_seconds = self.settings['long_work_min'] * 60
-        else:
-            self.current_seconds = self.settings['short_work_min'] * 60
+        self.current_seconds = self.settings['short_work_min'] * 60
         
     def is_break(self):
         return self.is_short_break or self.is_long_break
         
     def check_long_break_notify(self):
-        if self.is_long_break and self.current_seconds == self.settings['long_notify_sec']:
-            return True
+        # Long break notification is handled directly when the break starts
         return False
 
     def get_time_display(self):
@@ -149,12 +154,15 @@ class TimerLogic:
         return f"{minutes:02d}:{seconds:02d}"
 
     def get_phase_name(self):
+        breaks_until_long = self.settings['breaks_until_long']
+        current_cycle = (self.work_cycle_count % breaks_until_long) or breaks_until_long
         if self.is_long_break:
-            return f"LONG BREAK (Work Cycle: {self.work_cycle_count}/3)"
+            return f"LONG BREAK (After {breaks_until_long} short breaks)"
         elif self.is_short_break:
-            return f"SHORT BREAK (Work Cycle: {self.work_cycle_count}/3)"
+            return f"SHORT BREAK ({current_cycle}/{breaks_until_long})"
         else:
-            return f"WORK TIME (Cycle: {self.work_cycle_count + 1}/3)"
+            next_cycle = ((self.work_cycle_count + 1) % breaks_until_long) or breaks_until_long
+            return f"WORK TIME (Break: {next_cycle}/{breaks_until_long})"
             
     def get_break_message(self):
         if self.is_long_break:
@@ -173,6 +181,10 @@ class BreakNotificationWindow(QFrame):
     Non-modal, passive display window for both short and long breaks (Live or Test).
     It is updated and dismissed externally by the TimerWidget.
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        # Ensure the window is deleted when closed
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
     def __init__(self, parent_widget, is_long_break, advice_message, 
                  initial_time_value, is_test_mode,
                  bg_color, text_color, opacity, position,
@@ -212,12 +224,15 @@ class BreakNotificationWindow(QFrame):
         self.setFixedSize(new_width, new_height) 
         
         # --- WINDOW SETUP ---
+        # Set window flags to ensure notification stays on top but remains interactive
         self.setWindowFlags(
-            Qt.WindowStaysOnTopHint | 
-            Qt.Dialog | 
-            Qt.FramelessWindowHint 
+            Qt.Window |                    # Base window flag
+            Qt.WindowStaysOnTopHint |      # Stay on top of normal windows
+            Qt.FramelessWindowHint |       # No window frame
+            Qt.Tool                        # Tool window (no taskbar entry)
         )
-        self.setAttribute(Qt.WA_TranslucentBackground) 
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)  # Don't steal focus
         
         # Calculate alpha channel value
         alpha = int(255 * (opacity / 100.0)) 
@@ -351,6 +366,11 @@ class BreakNotificationWindow(QFrame):
         """Stops the internal test timer if active."""
         if self.is_test and self.test_timer and self.test_timer.isActive():
             self.test_timer.stop()
+    
+    def closeEvent(self, event):
+        """Handle window close event properly"""
+        self.stop_test_timer()
+        super().closeEvent(event)
 
     @Slot()
     def update_time_display(self, time_string):
@@ -374,17 +394,26 @@ class OpenEyeBreakApp(QMainWindow):
         self.settings = {
             'short_work_min': 20,     
             'short_break_sec': 20,    
-            'long_work_min': 60,      
             'long_break_min': 5,      
-            'long_notify_sec': 30,    
+            'breaks_until_long': 3,    # NEW: Number of short breaks before long break
             'enable_sound': True,
             'alarm_sound': TimerLogic.SOUND_OPTIONS["1. Exclamation (Default)"], 
             'theme': "Dark",
             'notif_opacity': 50,      
             'notif_position': "Center",
-            'restrict_long_break': False,  # NEW
-            'restrict_short_break': False # NEW
+            'restrict_long_break': False,
+            'restrict_short_break': False,
+            'gaming_mode': False       # NEW: Gaming Mode setting
         }
+        
+        # Store the base window flags
+        self._base_flags = Qt.Window | Qt.FramelessWindowHint
+        
+        # Initialize system tray
+        self.setup_system_tray()
+        
+        # Make sure window doesn't get destroyed when closed
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
         
         # 2. Initialize Timer Logic
         self.timer_logic = TimerLogic(self.settings)
@@ -393,8 +422,13 @@ class OpenEyeBreakApp(QMainWindow):
         self.setWindowTitle("OpenEyeBreak Timer")
         self.setFixedSize(380, 180) 
         
+        # Set window flags for frameless window that shows in taskbar
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground) 
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)  # Prevent destruction on close
+        
+        # Store original window flags
+        self._original_flags = self.windowFlags()
         
         # --- Core Layout for Styling ---
         self.main_container = QFrame()
@@ -490,6 +524,88 @@ class OpenEyeBreakApp(QMainWindow):
         except Exception:
             winsound.PlaySound("SystemBeep", winsound.SND_ALIAS | winsound.SND_ASYNC)
 
+    # --- System Tray Implementation ---
+    def setup_system_tray(self):
+        """Initialize the system tray icon and menu"""
+        icon_path = "resources/icon.png"
+        app_icon = QIcon(icon_path)
+        
+        # Set application icon
+        self.setWindowIcon(app_icon)
+        
+        # Set system tray icon
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(app_icon)
+        self.tray_icon.setToolTip("OpenEyeBreak Timer")
+        
+        # Create tray menu
+        tray_menu = QMenu()
+        restore_action = tray_menu.addAction("Settings")
+        restore_action.triggered.connect(self.open_settings_from_tray)
+        tray_menu.addSeparator()
+        quit_action = tray_menu.addAction("Quit")
+        quit_action.triggered.connect(QApplication.quit)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.tray_icon_activated)
+        self.tray_icon.show()
+    
+    def changeEvent(self, event):
+        """Handle window state changes"""
+        if event.type() == event.Type.WindowStateChange:
+            if self.windowState() & Qt.WindowMinimized:
+                self.minimize_to_tray()
+        super().changeEvent(event)
+    
+    def minimize_to_tray(self):
+        """Hide the window and show tray icon"""
+        # Close any active notification first
+        if hasattr(self, 'timer_widget'):
+            self.timer_widget.close_notification_window()
+        
+        # Just hide the window
+        self.hide()
+        
+        if self.settings['enable_sound']:
+            self.play_alarm("SystemDefault")  # Play a subtle sound when minimizing
+        if self.tray_icon:
+            self.tray_icon.showMessage(
+                "OpenEyeBreak Timer",
+                "Application minimized to tray. Timer continues running.",
+                QSystemTrayIcon.Information,
+                2000
+            )
+    
+    def restore_from_tray(self):
+        """Restore the window from system tray"""
+        # Close any active notification first
+        if hasattr(self, 'timer_widget'):
+            self.timer_widget.close_notification_window()
+        
+        # Reset window flags to base state
+        self.setWindowFlags(self._base_flags)
+        self.show()
+        self.activateWindow()
+        
+        if self.settings['enable_sound']:
+            self.play_alarm("SystemDefault")  # Play a subtle sound when restoring
+    
+    @Slot()
+    def open_settings_from_tray(self):
+        """Open the settings page from the tray icon"""
+        self.restore_from_tray()
+        self.show_settings_page()
+
+    def tray_icon_activated(self, reason):
+        """Handle tray icon activation"""
+        if reason == QSystemTrayIcon.Trigger:  # Single click
+            if self.isVisible():
+                if self.isMinimized():
+                    self.showNormal()
+                self.activateWindow()
+            else:
+                self.restore_from_tray()
+
     # --- Stack Navigation ---
     @Slot()
     def show_settings_page(self):
@@ -515,7 +631,8 @@ class OpenEyeBreakApp(QMainWindow):
                 
             self.settings = new_settings
             self.timer_logic = TimerLogic(self.settings) 
-            self.timer_widget.link_logic(self.timer_logic) 
+            self.timer_widget.link_logic(self.timer_logic)
+            self.timer_logic.start()
             self.timer_widget.update_gui_after_reset()
 
         self.setFixedSize(380, 180) 
@@ -563,6 +680,87 @@ class TimerWidget(QWidget):
         self.timer_logic = parent.timer_logic 
         self.notification_window = None # Holds a reference to the active notification
         self._create_ui()
+
+    def _is_fullscreen_app_running(self):
+        # Checks if there's a fullscreen window from any application. Works with games, YouTube, Twitch, etc.
+        try:
+            # Get screen dimensions
+            screen_geometry = QGuiApplication.primaryScreen().geometry()
+            screen_width = screen_geometry.width()
+            screen_height = screen_geometry.height()
+            
+            # Windows API functions
+            user32 = ctypes.windll.user32
+            
+            # Get the foreground (active) window
+            hwnd = user32.GetForegroundWindow()
+            
+            if not hwnd:
+                return False
+            
+            # Skip if it's our own window or notification window
+            if self._is_own_window(hwnd):
+                return False
+            
+            # Get window rectangle
+            rect = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            
+            window_width = rect.right - rect.left
+            window_height = rect.bottom - rect.top
+            
+
+            # Check if window covers the entire screen
+            # Allow small tolerance (±20 pixels) for taskbar/borders
+            is_fullscreen = (
+                abs(window_width - screen_width) <= 20 and
+                abs(window_height - screen_height) <= 20 and
+                rect.left <= 20 and rect.top <= 20
+            )
+            
+
+            return is_fullscreen
+            
+        except Exception as e:
+
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def _is_own_window(self, hwnd):
+        # Check if the window handle belongs to our application.
+        try:
+            # Get process ID of the window
+            process_id = wintypes.DWORD()
+            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+            
+            # Compare with our process ID
+            import os
+            is_own = process_id.value == os.getpid()
+
+            return is_own
+        except Exception as e:
+
+            return False
+            
+    def _show_minimized_break_notification(self, is_long_break):
+        """Shows a minimized notification in the system tray"""
+        if not self.main_window.tray_icon:
+            return
+            
+        break_type = "Long Break" if is_long_break else "Short Break"
+        message = random.choice(LONG_BREAK_ADVICE if is_long_break else BREAK_ADVICE)
+        
+        self.main_window.tray_icon.showMessage(
+            f"OpenEyeBreak - {break_type}",
+            message,
+            QSystemTrayIcon.Information,
+            5000  # Show for 5 seconds
+        )
+        
+        # Play sound if enabled
+        if self.main_window.settings['enable_sound']:
+            self.main_window.play_alarm(self.main_window.settings['alarm_sound'])
 
     def link_logic(self, logic):
         """Used to update the logic object after settings change."""
@@ -725,7 +923,7 @@ class TimerWidget(QWidget):
         self.min_btn = QPushButton("—")
         self.min_btn.setObjectName("MinimizeButton")
         self.min_btn.setFixedSize(30, 30)
-        self.min_btn.clicked.connect(self.main_window.showMinimized)
+        self.min_btn.clicked.connect(self.main_window.minimize_to_tray)
         title_layout.addWidget(self.min_btn)
         
         self.close_btn = QPushButton("✕")
@@ -760,16 +958,37 @@ class TimerWidget(QWidget):
         self.time_label.setAlignment(Qt.AlignCenter)
         content_layout.addWidget(self.time_label)
         
+        # Button Container
+        button_container = QWidget()
+        button_layout = QHBoxLayout(button_container)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(10)
+
         # Start/Stop Button
-        self.start_button = QPushButton("START TIMER")
+        self.start_button = QPushButton("PAUSE TIMER")
         self.start_button.setObjectName("StartStopButton")
         self.start_button.setFont(QFont("Arial", 12, QFont.Bold))
         self.start_button.clicked.connect(self.toggle_timer)
         self.start_button.setFixedHeight(30)
-        content_layout.addWidget(self.start_button)
         
-        # Apply initial style to the start button
+        # Reset Button
+        self.reset_button = QPushButton("RESET")
+        self.reset_button.setObjectName("ResetButton")
+        self.reset_button.setFont(QFont("Arial", 12, QFont.Bold))
+        self.reset_button.clicked.connect(self.reset_timer)
+        self.reset_button.setFixedHeight(30)
+        
+        # Add buttons to container
+        button_layout.addWidget(self.start_button)
+        button_layout.addWidget(self.reset_button)
+        content_layout.addWidget(button_container)
+        
+        # Start the timer automatically
+        self.timer_logic.start()
+        
+        # Apply initial style to the buttons
         self._style_button(self.start_button)
+        self._style_button(self.reset_button)
 
 
         main_layout.addWidget(content_widget)
@@ -801,12 +1020,17 @@ class TimerWidget(QWidget):
 
         # 3. Handle phase switch
         if phase_switched:
-            # If the phase is now a break, show the notification
+            # If the phase is now a break
             if self.timer_logic.is_break():
-                self.show_break_window()
-            # If the phase is now work (break just ended), close the notification
+                is_long_break = self.timer_logic.is_long_break
+                # Check for Gaming Mode and fullscreen apps
+                if self.main_window.settings.get('gaming_mode', True) and self._is_fullscreen_app_running():
+                    self._show_minimized_break_notification(is_long_break)
+                else:
+                    self.show_break_window()
+            # If the phase is now work (break just ended)
             else:
-                # NEW: Play the end-of-break sound (END SOUND for live)
+                # Play the end-of-break sound (END SOUND for live)
                 if self.main_window.settings['enable_sound']:
                     self.main_window.play_alarm(self.main_window.settings['alarm_sound'])
                     
@@ -823,51 +1047,97 @@ class TimerWidget(QWidget):
             self.notification_window.update_time_display(time_display_str)
 
 
+    def reset_timer(self):
+        """Resets the timer completely to its initial state (including cycle count)."""
+        self.timer_logic.reset()  # This will reset everything including the cycle count
+        self.timer_logic.start()  # Auto-start after reset
+        self.update_gui_after_reset()
+        # Close any open notification window
+        self.close_notification_window()
+    
     def update_gui_after_reset(self):
         """Updates all labels and buttons based on current logic state."""
         colors = self.get_colors()
         self.phase_label.setText(self.timer_logic.get_phase_name())
 
+        # Determine if we're in a break
+        is_in_break = self.timer_logic.is_long_break or self.timer_logic.is_short_break
+        
         if self.timer_logic.is_long_break: 
-             color = colors['RED'] 
+            color = colors['RED'] 
         elif self.timer_logic.is_short_break:
-             color = colors['ACCENT']
+            color = colors['ACCENT']
         else:
-             color = colors['GREEN']
+            color = colors['GREEN']
             
         self.time_label.setStyleSheet(f"color: {color};")
-        self.time_label.setText(self.timer_logic.get_time_display())
         
-        # Apply style specifically for the Start/Stop button state
+        # Show 00:00 during breaks, otherwise show actual time
+        if is_in_break:
+            self.time_label.setText("00:00")
+            # Disable pause button during breaks
+            self.start_button.setEnabled(False)
+        else:
+            self.time_label.setText(self.timer_logic.get_time_display())
+            self.start_button.setEnabled(True)
+        
+        # Style for Start/Stop button
         if self.timer_logic.is_running:
-            self.start_button.setText("STOP TIMER")
+            self.start_button.setText("PAUSE TIMER")
             self.start_button.setStyleSheet(f"""
                 QPushButton#StartStopButton {{
                     color: white;
                     font-weight: bold;
-                    background-color: {colors['RED']};
                     border: none;
                     padding: 5px;
                     border-radius: 4px;
+                    background-color: {colors['YELLOW']};
                 }}
                 QPushButton#StartStopButton:hover {{
                     background-color: #c0392b;
                 }}
+                QPushButton#StartStopButton:disabled {{
+                    background-color: #7f8c8d;
+                    color: #bdc3c7;
+                }}
             """)
         else:
-            self.start_button.setText("START TIMER")
+            self.start_button.setText("RESUME TIMER")
             self.start_button.setStyleSheet(f"""
                 QPushButton#StartStopButton {{
                     color: white;
                     font-weight: bold;
-                    background-color: {colors['GREEN']};
                     border: none;
                     padding: 5px;
                     border-radius: 4px;
+                    background-color: {colors['GREEN']};
                 }}
                 QPushButton#StartStopButton:hover {{
                     background-color: #27ae60;
                 }}
+                QPushButton#StartStopButton:disabled {{
+                    background-color: #7f8c8d;
+                    color: #bdc3c7;
+                }}
+            """)
+            
+        # Style for Reset button
+        self.reset_button.setStyleSheet(f"""
+            QPushButton#ResetButton {{
+                color: white;
+                font-weight: bold;
+                border: none;
+                padding: 5px;
+                border-radius: 4px;
+                background-color: {colors['RED']};
+            }}
+            QPushButton#ResetButton:hover {{
+                background-color: #c0392b;
+            }}
+            QPushButton#ResetButton:disabled {{
+                background-color: #7f8c8d;
+                color: #bdc3c7;
+            }}
             """)
 
 
@@ -917,13 +1187,22 @@ class TimerWidget(QWidget):
     @Slot()
     def close_notification_window(self):
         """
-        Closes any active BreakNotificationWindow. Stops the internal test timer if one exists.
+        Closes any active BreakNotificationWindow and starts the next work timer.
         """
-        if self.notification_window is not None:
-            # CRITICAL: Stop the test timer before closing if it's running
-            self.notification_window.stop_test_timer() 
+        try:
+            if self.notification_window is not None:
+                # CRITICAL: Stop the test timer before closing if it's running
+                self.notification_window.stop_test_timer() 
+                self.notification_window.close()
+                self.notification_window.deleteLater()  # Ensure proper cleanup
+                self.notification_window = None
                 
-            self.notification_window.close()
+                # Start the next work timer if we were in a break
+                if self.timer_logic.is_short_break or self.timer_logic.is_long_break:
+                    self.timer_logic.move_to_next_work_timer()  # Move to next work timer while maintaining cycle count
+                    self.update_gui_after_reset()  # Update the display
+        except:
+            # Reset the notification window reference if something goes wrong
             self.notification_window = None
 
         
@@ -935,7 +1214,16 @@ class TimerWidget(QWidget):
         
         self.close_notification_window()
         
+        # Check for Gaming Mode and fullscreen apps (but not during test)
+        if self.main_window.settings.get('gaming_mode', False) and self._is_fullscreen_app_running():
+            self._show_minimized_break_notification(is_long_break)
+            return
+            
         colors = self.get_colors()
+        
+        # Make sure we have a valid parent widget
+        if not hasattr(self, 'main_window') or not self.main_window:
+            return
         
         if is_long_break:
             # LONG BREAK TEST
@@ -1087,11 +1375,10 @@ class SettingsWidget(QWidget):
         
         # Long Break Settings
         content_layout.addWidget(QLabel("<b>Long Break Settings</b>"))
-        self._create_setting(content_layout, "Take a long break every:", 'long_work_min', "minutes", 30, 180)
-        self._create_setting(content_layout, "For:", 'long_break_min', "minutes", 1, 10)
-        self._create_setting(content_layout, "Notify long break before:", 'long_notify_sec', "seconds", 10, 60)
+        self._create_setting(content_layout, "Long Break Duration:", 'long_break_min', "minutes", 1, 30)
+        self._create_setting(content_layout, "Take a Long Break After:", 'breaks_until_long', "short breaks", 2, 10)
         
-        # NEW: Restrict Mode Checkbox for Long Break
+        # Restrict Mode Checkbox for Long Break
         self.checkbox_restrict_long_break = self._create_checkbox_setting(
             content_layout, 
             "Restrict Mode (Disable Dismiss Button)", 
@@ -1103,8 +1390,8 @@ class SettingsWidget(QWidget):
         
         # Short Break Settings
         content_layout.addWidget(QLabel("<b>Short Break Settings</b>"))
-        self._create_setting(content_layout, "Take a short break every:", 'short_work_min', "minutes", 10, 60)
-        self._create_setting(content_layout, "For:", 'short_break_sec', "seconds", 10, 30)
+        self._create_setting(content_layout, "Take a short break every:", 'short_work_min', "minutes", 1, 60)
+        self._create_setting(content_layout, "For:", 'short_break_sec', "seconds", 10, 59)
 
         # NEW: Restrict Mode Checkbox for Short Break
         self.checkbox_restrict_short_break = self._create_checkbox_setting(
@@ -1118,6 +1405,17 @@ class SettingsWidget(QWidget):
 
         # --- Notification Options ---
         content_layout.addWidget(QLabel("<b>Notification Appearance</b>"))
+        
+        # Gaming Mode Checkbox
+        gaming_frame = QWidget()
+        gaming_layout = QHBoxLayout(gaming_frame)
+        gaming_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.gaming_mode_cb = QCheckBox("Gaming Mode")
+        self.gaming_mode_cb.setToolTip("Disable on screen notification while in fullscreen mode")
+        gaming_layout.addWidget(self.gaming_mode_cb)
+        gaming_layout.addStretch(1)
+        content_layout.addWidget(gaming_frame)
         
         # Transparency Slider
         transparency_frame = QWidget()
@@ -1211,7 +1509,7 @@ class SettingsWidget(QWidget):
         content_layout.addStretch(1) 
         
         # Apply Button
-        apply_btn = QPushButton("Apply & Close")
+        apply_btn = QPushButton("Apply and Close")
         apply_btn.setObjectName("ApplyButton")
         apply_btn.setFont(QFont("Arial", 12, QFont.Bold))
         apply_btn.setFixedHeight(30)
@@ -1225,8 +1523,7 @@ class SettingsWidget(QWidget):
         """Called immediately when the theme ComboBox selection changes."""
         selected_theme = self.theme_picker.itemText(index)
         
-        # Update the main window's settings['theme'] immediately 
-        self.main_window.settings['theme'] = selected_theme
+        # Only preview the theme without updating the main settings
         self.main_window.apply_theme(selected_theme, update_settings=False)
 
 
@@ -1240,9 +1537,8 @@ class SettingsWidget(QWidget):
         self.theme_picker.blockSignals(False)
 
         # Load numerical settings
-        self.spin_long_work_min.setValue(self.temp_settings['long_work_min'])
         self.spin_long_break_min.setValue(self.temp_settings['long_break_min'])
-        self.spin_long_notify_sec.setValue(self.temp_settings['long_notify_sec'])
+        self.spin_breaks_until_long.setValue(self.temp_settings['breaks_until_long'])
         self.spin_short_work_min.setValue(self.temp_settings['short_work_min'])
         self.spin_short_break_sec.setValue(self.temp_settings['short_break_sec'])
         
@@ -1253,6 +1549,9 @@ class SettingsWidget(QWidget):
             "1. Exclamation (Default)"
         )
         self.sound_picker.setCurrentText(current_display_name)
+        
+        # Load Gaming Mode setting
+        self.gaming_mode_cb.setChecked(self.temp_settings.get('gaming_mode', False))
         
         # Load transparency and position
         self.opacity_slider.blockSignals(True)
@@ -1312,9 +1611,8 @@ class SettingsWidget(QWidget):
         
         settings['theme'] = self.theme_picker.currentText()
         
-        settings['long_work_min'] = self.spin_long_work_min.value()
         settings['long_break_min'] = self.spin_long_break_min.value()
-        settings['long_notify_sec'] = self.spin_long_notify_sec.value()
+        settings['breaks_until_long'] = self.spin_breaks_until_long.value()
         settings['short_work_min'] = self.spin_short_work_min.value()
         settings['short_break_sec'] = self.spin_short_break_sec.value()
         settings['enable_sound'] = self.sound_enable_cb.isChecked()
@@ -1325,6 +1623,9 @@ class SettingsWidget(QWidget):
         # Collect transparency and position settings
         settings['notif_opacity'] = self.opacity_slider.value()
         settings['notif_position'] = self.position_picker.currentText()
+        
+        # Collect Gaming Mode setting
+        settings['gaming_mode'] = self.gaming_mode_cb.isChecked()
         
         # NEW: Collect restrict mode settings
         settings['restrict_long_break'] = self.checkbox_restrict_long_break.isChecked()
@@ -1338,6 +1639,9 @@ class SettingsWidget(QWidget):
         new_settings = self.get_settings()
         self.temp_settings = new_settings.copy() 
         
+        # Update the main window's settings including the theme
+        self.main_window.settings['theme'] = new_settings['theme']
+        self.main_window.apply_theme(new_settings['theme'], update_settings=True)
         self.main_window.show_timer_page(new_settings)
         
     @Slot()
@@ -1346,9 +1650,9 @@ class SettingsWidget(QWidget):
         Called when the Close (X) button is pressed. 
         Discards changes and switches back to the original theme.
         """
-        # Revert the theme setting and visual appearance to the *saved* theme 
-        self.main_window.settings['theme'] = self.main_window.settings['theme']
-        self.main_window.apply_theme(self.main_window.settings['theme'], update_settings=False)
+        # Restore the original theme
+        original_theme = self.temp_settings['theme']  # Get the original theme from temp settings
+        self.main_window.apply_theme(original_theme, update_settings=False)
         self.main_window.show_timer_page() 
 
 
@@ -1359,7 +1663,11 @@ class SettingsWidget(QWidget):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     
-    app.setStyle("Fusion") 
+    app.setStyle("Fusion")
+    
+    # Set application-wide icon
+    app_icon = QIcon("resources/icon.png")
+    app.setWindowIcon(app_icon)
     
     window = OpenEyeBreakApp()
     window.show()
