@@ -25,18 +25,18 @@ THEMES = {
         'FG': "#ecf0f1",          # Light Text
         'INPUT_BG': "#34495e",    # Title Bar/Input Background
         'ACCENT': "#3498db",      # Blue Accent (Short Break/Minimize)
-        'RED': "#e74c3c",         # Red Accent (Stop/Long Break)
-        'GREEN': "#2ecc71",       # Green Accent (Start/Work Time)
-        'YELLOW': "#f1c40f",      # Yellow Accent (Settings)
+        'RED': "#d8601b",         # Red Accent (Stop/Long Break)
+        'GREEN': "#25ae60",       # Green Accent (Start/Work Time)
+        'YELLOW': "#f39c12",      # Yellow Accent (Settings)
         'TEXT_ACCENT': "#bdc3c7", # Muted Text
     },
     "Light": {
         'BG': "#f0f0f0",          # Light Gray
         'FG': "#333333",          # Dark Text
         'INPUT_BG': "#e1e1e1",    # Title Bar/Input Background
-        'ACCENT': "#2980b9",      # Blue Accent
-        'RED': "#c0392b",         # Red Accent
-        'GREEN': "#27ae60",       # Green Accent
+        'ACCENT': "#9cbde7",      # Blue Accent
+        'RED': "#d8601b",         # Red Accent
+        'GREEN': "#25ae60",       # Green Accent
         'YELLOW': "#f39c12",      # Yellow Accent
         'TEXT_ACCENT': "#7f8c8d", # Muted Text
     },
@@ -119,20 +119,19 @@ BREAK_ADVICE = [
     "Stretch your arms and shoulders. Release that tension!",
     "Stand up and walk a few steps. Get the blood flowing.",
     "Blink rapidly for 10 seconds to moisten your eyes.",
-    "Look out the window at a distant object for one minute.",
+    "Look out the window at a distant object.",
     "Gently massage your temples and neck to relieve strain.",
-    "Close your eyes and focus on your breath for 30 seconds.",
-    "Grab a quick drink of water. Stay hydrated!",
-    "Practice the 20-20-20 rule: 20 feet, 20 seconds.",
+    "Close your eyes and focus on your breath.",
+    "Grab a quick drink of water. Stay hydrated!"
 ]
 
 LONG_BREAK_ADVICE = [
-    "Get up and make a fresh cup of coffee or tea. Walk away from the screen.",
+    "Get up and make a fresh cup of coffee or tea.",
     "Do a quick chore like loading the dishwasher. Get moving!",
     "Step outside for a few minutes of fresh air and sunlight.",
     "Do some light stretching. Focus on your back and legs.",
     "Listen to a favorite song or short podcast episode.",
-    "Close your eyes and practice mindful breathing for one full minute.",
+    "Close your eyes and practice mindful breathing.",
     "Hydrate! Drink a full glass of water, and maybe grab a snack."
 ]
 
@@ -164,7 +163,6 @@ class TimerLogic:
         
     def move_to_next_work_timer(self):
         """Moves to the next work timer while maintaining the current cycle count."""
-        self.is_running = False
         self.is_short_break = False
         self.is_long_break = False
         # Start the next work timer
@@ -412,7 +410,7 @@ class BreakNotificationWindow(QFrame):
             y = screen_geometry.y() + 50 # 50px offset from the top
         elif position == "Center":
             y = screen_geometry.y() + (screen_geometry.height() - self.height()) // 2
-        elif position == "Down":
+        elif position == "Bottom":
             y = screen_geometry.y() + screen_geometry.height() - self.height() - 50 # 50px offset from the bottom
         else: # Default to Center
             y = screen_geometry.y() + (screen_geometry.height() - self.height()) // 2
@@ -612,11 +610,14 @@ class OpenEyeBreakApp(QMainWindow):
             self.setPalette(palette)
 
     def play_alarm(self, sound_alias):
-        """Plays the selected system sound."""
         try:
             winsound.PlaySound(sound_alias, winsound.SND_ALIAS | winsound.SND_ASYNC)
-        except Exception:
-            winsound.PlaySound("SystemBeep", winsound.SND_ALIAS | winsound.SND_ASYNC)
+        except Exception as e:
+            print(f"Failed to play {sound_alias}: {e}")
+            try:
+                winsound.PlaySound("SystemBeep", winsound.SND_ALIAS | winsound.SND_ASYNC)
+            except Exception as fallback_error:
+                print(f"Fallback sound also failed: {fallback_error}")
 
     # --- System Tray Implementation ---
     def setup_system_tray(self):
@@ -835,17 +836,14 @@ class TimerWidget(QWidget):
     def _is_own_window(self, hwnd):
         # Check if the window handle belongs to our application.
         try:
-            # Get process ID of the window
-            process_id = wintypes.DWORD()
-            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
-            
-            # Compare with our process ID
-            import os
-            is_own = process_id.value == os.getpid()
-
-            return is_own
-        except Exception as e:
-
+            # Check main window
+            if int(self.main_window.winId()) == hwnd:
+                return True
+            # Check notification window
+            if self.notification_window and int(self.notification_window.winId()) == hwnd:
+                return True
+            return False
+        except Exception:
             return False
             
     def _show_minimized_break_notification(self, is_long_break):
@@ -1306,11 +1304,14 @@ class TimerWidget(QWidget):
         """
         try:
             if self.notification_window is not None:
-                # CRITICAL: Stop the test timer before closing if it's running
-                self.notification_window.stop_test_timer() 
-                self.notification_window.close()
-                self.notification_window.deleteLater()  # Ensure proper cleanup
-                self.notification_window = None
+                try:
+                    self.notification_window.stop_test_timer()
+                    self.notification_window.close()
+                except Exception as e:
+                    print(f"Error closing notification: {e}")
+                finally:
+                    self.notification_window.deleteLater()
+                    self.notification_window = None
                 
                 # Start the next work timer if we were in a break
                 if self.timer_logic.is_short_break or self.timer_logic.is_long_break:
