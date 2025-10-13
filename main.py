@@ -511,7 +511,7 @@ class OpenEyeBreakApp(QMainWindow):
         self.timer_logic = TimerLogic(self.settings)
 
         # 3. Setup Main Window Frame
-        self.setWindowTitle("OpenEyeBreak Timer")
+        self.setWindowTitle("Open Eye Break")
         self.setFixedSize(380, 180) 
         
         # Set window flags for frameless window that shows in taskbar
@@ -642,7 +642,7 @@ class OpenEyeBreakApp(QMainWindow):
         # Set system tray icon
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(app_icon)
-        self.tray_icon.setToolTip("OpenEyeBreak Timer")
+        self.tray_icon.setToolTip("Open Eye Break")
         
         # Create tray menu
         tray_menu = QMenu()
@@ -676,7 +676,7 @@ class OpenEyeBreakApp(QMainWindow):
             self.play_alarm("SystemDefault")  # Play a subtle sound when minimizing
         if self.tray_icon:
             self.tray_icon.showMessage(
-                "OpenEyeBreak Timer",
+                "Open Eye Break",
                 "Application minimized to tray. Timer continues running.",
                 QSystemTrayIcon.Information,
                 2000
@@ -855,7 +855,7 @@ class TimerWidget(QWidget):
         message = random.choice(LONG_BREAK_ADVICE if is_long_break else BREAK_ADVICE)
         
         self.main_window.tray_icon.showMessage(
-            f"OpenEyeBreak - {break_type}",
+            f"Open Eye Break - {break_type}",
             message,
             QSystemTrayIcon.Information,
             5000  # Show for 5 seconds
@@ -1009,7 +1009,7 @@ class TimerWidget(QWidget):
         title_layout.setSpacing(5)
         
         # Title Label
-        title_label = QLabel(" OpenEyeBreak Timer")
+        title_label = QLabel("Open Eye Break v1.0")
         title_label.setFont(QFont("Arial", 10, QFont.Bold))
         title_layout.addWidget(title_label)
         
