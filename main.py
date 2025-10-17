@@ -8,11 +8,14 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QSpinBox, QCheckBox, QSlider,
     QMessageBox, QFrame, QStackedWidget, QSystemTrayIcon, QMenu
 )
-from PySide6.QtCore import Qt, QTimer, Slot, QSize, QRect, QTime
+from PySide6.QtCore import Qt, QTimer, Slot, QSize, QRect, QTime, QThread, Signal
 from PySide6.QtGui import QFont, QColor, QPalette, QGuiApplication, QFontMetrics, QIcon
 
-import ctypes
-from ctypes import wintypes
+#import ctypes
+#from ctypes import wintypes
+import win32gui
+import win32con
+import win32api
 
 # ----------------------------------------------------------------------
 # --- THEME AND COLOR DEFINITIONS ---
@@ -314,6 +317,9 @@ class BreakNotificationWindow(QFrame):
 
         self.setWindowFlags(window_flags)
 
+        # Store the force_on_top flag for later use
+        self.force_on_top = force_on_top
+
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)  # Don't steal focus
         
@@ -400,6 +406,10 @@ class BreakNotificationWindow(QFrame):
         self._position_on_screen(position)
         self.show()
 
+        # If not forcing on top, push window behind active window
+        if not self.force_on_top:
+            self._push_behind_active_window()
+
     def _position_on_screen(self, position):
         """Positions the window on the primary screen based on the setting (Top/Center/Down)."""
         screen_geometry = QGuiApplication.primaryScreen().geometry()
@@ -416,6 +426,30 @@ class BreakNotificationWindow(QFrame):
             y = screen_geometry.y() + (screen_geometry.height() - self.height()) // 2
             
         self.move(x, y)
+    
+    def _push_behind_active_window(self):
+        #Positions this window behind the currently active fullscreen window.
+        try:
+            import win32gui
+            import win32con
+            
+            # Get the current foreground (active) window
+            active_hwnd = win32gui.GetForegroundWindow()
+            if not active_hwnd:
+                return
+            
+            # Get our window handle
+            our_hwnd = int(self.winId())
+            
+            # Move our window behind the active window
+            win32gui.SetWindowPos(
+                our_hwnd,
+                active_hwnd,  # Insert after this window (puts us behind it)
+                0, 0, 0, 0,
+                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE
+            )
+        except Exception as e:
+            print(f"Could not push window behind: {e}")
 
     def _format_test_time(self, seconds):
         """Formats time according to test rules: MM:SS or XX (seconds only if < 60)."""
@@ -468,6 +502,74 @@ class BreakNotificationWindow(QFrame):
         if not self.is_test:
             self.timer_label.setText(time_string)
             
+# --- FULLSCREEN DETECTION THREAD ---
+class FullscreenMonitorThread(QThread):
+    """Background thread that continuously monitors for fullscreen apps."""
+    fullscreen_detected = Signal(bool)  # Emits True when fullscreen detected
+    
+    def __init__(self):
+        super().__init__()
+        self.is_running = True
+        self.last_fullscreen_state = False
+        
+    def run(self):
+        """Continuously check for fullscreen apps in background."""
+        while self.is_running:
+            try:
+                current_state = self._check_fullscreen()
+                
+                # Only emit if state changed
+                if current_state != self.last_fullscreen_state:
+                    self.fullscreen_detected.emit(current_state)
+                    self.last_fullscreen_state = current_state
+            except:
+                pass
+            
+            self.msleep(500)  # Check every 500ms
+    
+    def stop(self):
+        """Stop the monitoring thread."""
+        self.is_running = False
+        self.wait()
+    
+    def _check_fullscreen(self):
+        """Check if active window is fullscreen."""
+        try:
+            tolerance_pixels = 10
+            hwnd = win32gui.GetForegroundWindow()
+            if not hwnd:
+                return False
+
+            if not win32gui.IsWindowVisible(hwnd):
+                return False
+            if win32gui.IsIconic(hwnd):
+                return False
+
+            rect = win32gui.GetWindowRect(hwnd)
+            hmon = win32api.MonitorFromWindow(hwnd, win32con.MONITOR_DEFAULTTOPRIMARY)
+            mon_info = win32api.GetMonitorInfo(hmon)
+            mon_rect = mon_info["Monitor"]
+
+            win_left, win_top, win_right, win_bottom = rect
+            mon_left, mon_top, mon_right, mon_bottom = mon_rect
+
+            win_width = win_right - win_left
+            win_height = win_bottom - win_top
+            mon_width = mon_right - mon_left
+            mon_height = mon_bottom - mon_top
+
+            is_fullscreen = (
+                (abs(win_width - mon_width) <= tolerance_pixels and
+                abs(win_height - mon_height) <= tolerance_pixels)
+                or
+                (abs(win_left - mon_left) <= tolerance_pixels and
+                abs(win_top - mon_top) <= tolerance_pixels and
+                abs(win_right - mon_right) <= tolerance_pixels and
+                abs(win_bottom - mon_bottom) <= tolerance_pixels)
+            )
+            return is_fullscreen
+        except:
+            return False
 
 # ----------------------------------------------------------------------
 # --- MAIN APPLICATION FRAME (The QMainWindow) ---
@@ -503,6 +605,14 @@ class OpenEyeBreakApp(QMainWindow):
         
         # Initialize system tray
         self.setup_system_tray()
+
+        # Start background fullscreen monitoring thread
+        self.fullscreen_monitor = FullscreenMonitorThread()
+        self.fullscreen_monitor.fullscreen_detected.connect(self.on_fullscreen_changed)
+        self.fullscreen_monitor.start()
+
+        # Store current fullscreen state
+        self.is_fullscreen_app_active = False
         
         # Make sure window doesn't get destroyed when closed
         self.setAttribute(Qt.WA_DeleteOnClose, False)
@@ -682,6 +792,11 @@ class OpenEyeBreakApp(QMainWindow):
                 2000
             )
     
+    @Slot(bool)
+    def on_fullscreen_changed(self, is_fullscreen):
+        """Called when fullscreen state changes."""
+        self.is_fullscreen_app_active = is_fullscreen
+
     def restore_from_tray(self):
         """Restore the window from system tray"""
         # Close any active notification first
@@ -773,6 +888,12 @@ class OpenEyeBreakApp(QMainWindow):
     def mouseReleaseEvent(self, event):
         self.old_pos = None
 
+    def closeEvent(self, event):
+        # Handle application close.
+        if hasattr(self, 'fullscreen_monitor'):
+            self.fullscreen_monitor.stop()
+        super().closeEvent(event)
+
 
 # ----------------------------------------------------------------------
 # --- TIMER CONTENT WIDGET (The Timer Page) ---
@@ -788,52 +909,64 @@ class TimerWidget(QWidget):
         self._create_ui()
 
     def _is_fullscreen_app_running(self):
-        # Checks if there's a fullscreen window from any application. Works with games, YouTube, Twitch, etc.
+        """
+        Checks if the active (foreground) application window is currently running
+        in true fullscreen mode on Windows, with all necessary structures and 
+        definitions contained within the function scope.
+        """
+        
+        # 1. Define necessary Windows API structures and constants
+        # (Keeping them local to the function)
+        
         try:
-            # Get screen dimensions
-            screen_geometry = QGuiApplication.primaryScreen().geometry()
-            screen_width = screen_geometry.width()
-            screen_height = screen_geometry.height()
             
-            # Windows API functions
-            user32 = ctypes.windll.user32
-            
-            # Get the foreground (active) window
-            hwnd = user32.GetForegroundWindow()
-            
+            tolerance_pixels: int = 10
+
+            # Get handle of the active (foreground) window
+            hwnd = win32gui.GetForegroundWindow()
             if not hwnd:
                 return False
-            
-            # Skip if it's our own window or notification window
-            if self._is_own_window(hwnd):
-                return False
-            
-            # Get window rectangle
-            rect = wintypes.RECT()
-            user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            
-            window_width = rect.right - rect.left
-            window_height = rect.bottom - rect.top
-            
 
-            # Check if window covers the entire screen
-            # Allow small tolerance (±20 pixels) for taskbar/borders
+            # If window is minimized or invisible, skip it
+            if not win32gui.IsWindowVisible(hwnd):
+                return False
+            if win32gui.IsIconic(hwnd):
+                return False
+
+            # Get window rectangle and monitor info
+            rect = win32gui.GetWindowRect(hwnd)
+            hmon = win32api.MonitorFromWindow(hwnd, win32con.MONITOR_DEFAULTTOPRIMARY)
+            mon_info = win32api.GetMonitorInfo(hmon)
+            mon_rect = mon_info["Monitor"]
+
+            win_left, win_top, win_right, win_bottom = rect
+            mon_left, mon_top, mon_right, mon_bottom = mon_rect
+
+            win_width = win_right - win_left
+            win_height = win_bottom - win_top
+            mon_width = mon_right - mon_left
+            mon_height = mon_bottom - mon_top
+
+            # --- Final evaluation ---
             is_fullscreen = (
-                abs(window_width - screen_width) <= 20 and
-                abs(window_height - screen_height) <= 20 and
-                rect.left <= 20 and rect.top <= 20
+                (abs(win_width - mon_width) <= tolerance_pixels and
+                abs(win_height - mon_height) <= tolerance_pixels)
+                or
+                (abs(win_left - mon_left) <= tolerance_pixels and
+                abs(win_top - mon_top) <= tolerance_pixels and
+                abs(win_right - mon_right) <= tolerance_pixels and
+                abs(win_bottom - mon_bottom) <= tolerance_pixels)
             )
-            
 
             return is_fullscreen
+
             
         except Exception as e:
-
             import traceback
             traceback.print_exc()
             return False
     
-    def _is_own_window(self, hwnd):
+    """ def _is_own_window(self, hwnd):
         # Check if the window handle belongs to our application.
         try:
             # Check main window
@@ -844,10 +977,10 @@ class TimerWidget(QWidget):
                 return True
             return False
         except Exception:
-            return False
+            return False """
             
-    def _show_minimized_break_notification(self, is_long_break):
-        """Shows a minimized notification in the system tray"""
+    """ def _show_minimized_break_notification(self, is_long_break):
+        # Shows a minimized notification in the system tray
         if not self.main_window.tray_icon:
             return
             
@@ -863,7 +996,7 @@ class TimerWidget(QWidget):
         
         # Play sound if enabled
         if self.main_window.settings['enable_sound']:
-            self.main_window.play_alarm(self.main_window.settings['alarm_sound'])
+            self.main_window.play_alarm(self.main_window.settings['alarm_sound']) """
 
     def link_logic(self, logic):
         """Used to update the logic object after settings change."""
@@ -1250,21 +1383,29 @@ class TimerWidget(QWidget):
         # Play sound at the START of the LIVE break
         if self.main_window.settings['enable_sound']:
             self.main_window.play_alarm(self.main_window.settings['alarm_sound'])
+
+        # Check for Gaming Mode and fullscreen apps - use the monitored state
+        gaming_mode_enabled = self.main_window.settings.get('gaming_mode', True)
+        fullscreen_app_detected = self.main_window.is_fullscreen_app_active
+        
+        if gaming_mode_enabled and fullscreen_app_detected:
+            # Gaming mode ON + fullscreen app detected: Force on top is false
+            force_on_top_flag = False
+        else:
+            # Normal case: Force on top is true
+            force_on_top_flag = True
         
         colors = self.get_colors()
-
-        # Determine break type using timer logic
-        is_long_break_live = self.timer_logic.is_long_break
 
         # Determine if advice should be shown
         show_advice_flag = (self.main_window.settings['show_advice_long'] if self.timer_logic.is_long_break 
                     else self.main_window.settings['show_advice_short'])
 
-        # Determine if the window should be forced on top
-        is_gaming_scenario = (self.main_window.settings.get('gaming_mode', True) and
-                              self._is_fullscreen_app_running())
-        force_on_top_flag = not is_gaming_scenario
+        # If we reach here, we've already handled the gaming mode + fullscreen case
+        # So always force on top for the on-screen notification
+        # force_on_top_flag = True
         
+        # Determine if it is a long or short break and set parameters accordingly
         if self.timer_logic.is_long_break:
             # LONG BREAK
             advice = random.choice(LONG_BREAK_ADVICE)
