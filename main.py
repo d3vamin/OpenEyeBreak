@@ -1,4 +1,4 @@
-# main.py (Final Version with Restrict Mode and Dual Notification Sound)
+# main.py
 
 import sys
 import winsound
@@ -22,31 +22,50 @@ except ImportError:
 import json
 import os
 
-def load_settings_from_file():
+def get_resource_path(filename):
     """
-    Load settings from a config file if it exists.
-    Returns a dictionary of settings to merge with defaults.
+    Get the absolute path to a resource file (icon, config, etc).
+    Works for both script execution and compiled .exe files.
+    Checks: exe directory, temp directory, and script directory.
+    Returns the path if file exists, None otherwise.
     """
-    config_file = "OpenEyeBreak_settings.json"
+    possible_paths = []
     
-    # Get the directory where the script/executable is located
     if getattr(sys, 'frozen', False):
-        base_path = sys._MEIPASS
+        # Running as compiled executable
+        exe_dir = os.path.dirname(sys.executable)
+        possible_paths.append(os.path.join(exe_dir, filename))
+        temp_dir = sys._MEIPASS
+        possible_paths.append(os.path.join(temp_dir, filename))
     else:
-        base_path = os.path.dirname(os.path.abspath(__file__))
+        # Running as script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        possible_paths.append(os.path.join(script_dir, filename))
     
-    config_path = os.path.join(base_path, config_file)
+    # Try each possible path
+    for path in possible_paths:
+        if os.path.exists(path):
+            return path
     
-    # If file doesn't exist, return empty dict (use defaults)
-    if not os.path.exists(config_path):
-        print(f"Config file not found at {config_path}. Using default settings.")
+    return None
+
+def load_settings_from_file():
+    """Load settings from OpenEyeBreak_settings.json if it exists."""
+    config_path = get_resource_path("OpenEyeBreak_settings.json")
+    
+    if not config_path:
+        print("Config file 'OpenEyeBreak_settings.json' not found. Using default settings.")
         return {}
     
     try:
         with open(config_path, 'r') as f:
-            loaded_settings = json.load(f)
-            print(f"Settings loaded from {config_path}")
+            loaded_data = json.load(f)
+            # Filter out comment lines (keys starting with _)
+            loaded_settings = {k: v for k, v in loaded_data.items() if not k.startswith('_')}
             return loaded_settings
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Invalid JSON in config file: {e}")
+        return {}
     except Exception as e:
         print(f"Error loading config file: {e}. Using default settings.")
         return {}
@@ -65,6 +84,7 @@ TITLE_BAR_HEIGHT = 30
 SETTINGS_WINDOW_WIDTH = 450
 TIMER_WINDOW_WIDTH = 380
 TIMER_WINDOW_HEIGHT = 180
+ADVICE_FRAME_HEIGHT_MULTIPLIER = 2
 WINDOW_BORDER_RADIUS = 10
 
 # ----------------------------------------------------------------------
@@ -337,7 +357,7 @@ class BreakNotificationWindow(QFrame):
         if show_advice:
             advice_width = advice_metrics.size(Qt.TextSingleLine, advice_message).width()
             new_width = max(NOTIFICATION_WINDOW_MIN_WIDTH, min(advice_width + HORIZONTAL_PADDING, NOTIFICATION_WINDOW_MAX_WIDTH))
-            ADVICE_HEIGHT = advice_metrics.height()
+            ADVICE_HEIGHT = int(advice_metrics.height() * ADVICE_FRAME_HEIGHT_MULTIPLIER)
         else:
             # When no advice, size based on button text if button exists
             if not is_restricted:
@@ -682,7 +702,7 @@ class OpenEyeBreakApp(QMainWindow):
             'long_break_min': 5,      
             'breaks_until_long': 3,    # NEW: Number of short breaks before long break
             'enable_sound': True,
-            'alarm_sound': TimerLogic.SOUND_OPTIONS.get("Exclamation", "SystemExclamation"), 
+            'alarm_sound': "SystemExclamation", 
             'theme': "Dark",
             'notif_opacity': 50,      
             'notif_position': "Center",
@@ -695,6 +715,10 @@ class OpenEyeBreakApp(QMainWindow):
         
         # Merge file settings into defaults (file settings override defaults)
         self.settings.update(file_settings)
+
+        # Validate alarm_sound exists in SOUND_OPTIONS
+        if self.settings['alarm_sound'] not in TimerLogic.SOUND_OPTIONS.values():
+            self.settings['alarm_sound'] = TimerLogic.SOUND_OPTIONS.get("Exclamation", "SystemExclamation")
 
         # Store the base window flags
         self._base_flags = Qt.Window | Qt.FramelessWindowHint
@@ -859,19 +883,13 @@ class OpenEyeBreakApp(QMainWindow):
     # --- System Tray Implementation ---
     def setup_system_tray(self):
         """Initialize the system tray icon and menu"""
-        import os
-        import sys
+        icon_path = get_resource_path(os.path.join("resources", "icon.ico"))
         
-        # Get the correct path for the icon whether running as script or exe
-        if getattr(sys, 'frozen', False):
-            # Running as compiled executable
-            base_path = sys._MEIPASS
+        if icon_path:
+            app_icon = QIcon(icon_path)
         else:
-            # Running as script
-            base_path = os.path.dirname(os.path.abspath(__file__))
-        
-        icon_path = os.path.join(base_path, "resources", "icon.ico")
-        app_icon = QIcon(icon_path)
+            # Fallback if icon not found
+            app_icon = QIcon()
         
         # Set application icon
         self.setWindowIcon(app_icon)
@@ -1189,7 +1207,7 @@ class TimerWidget(QWidget):
         title_layout.setSpacing(5)
         
         # Title Label
-        title_label = QLabel("Open Eye Break v1.0")
+        title_label = QLabel("Open Eye Break v1.1")
         title_label.setFont(QFont("Arial", 10, QFont.Bold))
         title_layout.addWidget(title_label)
         
@@ -1989,21 +2007,13 @@ class SettingsWidget(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
     app.setStyle("Fusion")
     
     # Set application-wide icon
-    import os
-    if getattr(sys, 'frozen', False):
-        # Running as compiled executable
-        base_path = sys._MEIPASS
-    else:
-        # Running as script
-        base_path = os.path.dirname(os.path.abspath(__file__))
-
-    icon_path = os.path.join(base_path, "resources", "icon.ico")
-    app_icon = QIcon(icon_path)
-    app.setWindowIcon(app_icon)
+    icon_path = get_resource_path(os.path.join("resources", "icon.ico"))
+    if icon_path:
+        app_icon = QIcon(icon_path)
+        app.setWindowIcon(app_icon)
     
     window = OpenEyeBreakApp()
     window.show()

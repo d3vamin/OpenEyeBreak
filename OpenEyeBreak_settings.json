@@ -1,0 +1,43 @@
+{
+  "short_work_min": 20,
+  "_short_work_min_comment": "Duration of work sessions in minutes. Range: 1-60 minutes. Default: 20. How long you work before the app suggests a short break.",
+
+  "short_break_sec": 20,
+  "_short_break_sec_comment": "Duration of short breaks in seconds. Range: 10-59 seconds. Default: 20. Brief break time (follow 20-20-20 rule: look 20 feet away for 20 seconds).",
+
+  "long_break_min": 5,
+  "_long_break_min_comment": "Duration of long breaks in minutes. Range: 1-30 minutes. Default: 5. Longer break after multiple short breaks to rest more thoroughly.",
+
+  "breaks_until_long": 3,
+  "_breaks_until_long_comment": "Number of short breaks before a long break is triggered. Range: 2-10. Default: 3. Example: 3 means after 3 short breaks, you get 1 long break.",
+
+  "enable_sound": true,
+  "_enable_sound_comment": "Enable/disable notification sounds. Options: true (enable) or false (disable). Default: true. Plays sound when breaks start and end.",
+
+  "alarm_sound": "SystemExclamation",
+  "_alarm_sound_comment": "Sound to play for notifications. Options: 'SystemExclamation', 'SystemHand', 'SystemAsterisk', 'SystemQuestion', 'SystemNotification', 'SystemDefault', 'SystemWelcome', 'SystemExit', 'MailBeep', 'AppGPFault', etc. Default: 'SystemExclamation'. System sounds available on your Windows installation.",
+
+  "theme": "Dark",
+  "_theme_comment": "Application color theme. Options: 'Dark' (dark blue/gray with light text), 'Light' (light gray with dark text), or 'System' (uses OS defaults). Default: 'Dark'. Changes the overall appearance of the app.",
+
+  "notif_opacity": 50,
+  "_notif_opacity_comment": "Transparency of notification windows. Range: 0-100 (0=invisible, 100=fully opaque). Default: 50. Higher values = more visible but blocks more content behind.",
+
+  "notif_position": "Center",
+  "_notif_position_comment": "Screen position for break notifications. Options: 'Top', 'Center', 'Bottom'. Default: 'Center'. Where the notification window appears on your screen.",
+
+  "restrict_long_break": false,
+  "_restrict_long_break_comment": "Disable dismiss button for long breaks. Options: true (restrict) or false (allow dismiss). Default: false. When true, you must wait for the full long break duration.",
+
+  "restrict_short_break": false,
+  "_restrict_short_break_comment": "Disable dismiss button for short breaks. Options: true (restrict) or false (allow dismiss). Default: false. When true, you must wait for the full short break duration.",
+
+  "gaming_mode": false,
+  "_gaming_mode_comment": "Automatically hide notifications while fullscreen games/apps are active. Options: true (enable) or false (disable). Default: false. Prevents notifications from interrupting games.",
+
+  "show_advice_long": true,
+  "_show_advice_long_comment": "Display helpful advice text on long break notifications. Options: true (show) or false (hide). Default: true. Shows suggestions like 'Get up and make coffee' on long breaks.",
+
+  "show_advice_short": true,
+  "_show_advice_short_comment": "Display helpful advice text on short break notifications. Options: true (show) or false (hide). Default: true. Shows suggestions like 'Stretch your arms' on short breaks."
+}
