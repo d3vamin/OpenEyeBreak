@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QFrame, QStackedWidget, QSystemTrayIcon, QMenu
 )
 from PySide6.QtCore import Qt, QTimer, Slot, QSize, QRect, QTime, QThread, Signal
-from PySide6.QtGui import QFont, QColor, QPalette, QGuiApplication, QFontMetrics, QIcon
+from PySide6.QtGui import QFont, QColor, QPalette, QGuiApplication, QFontMetrics, QIcon, QRegion, QPainterPath
 
 try:
     import win32gui
@@ -34,6 +34,7 @@ TITLE_BAR_HEIGHT = 30
 SETTINGS_WINDOW_WIDTH = 450
 TIMER_WINDOW_WIDTH = 380
 TIMER_WINDOW_HEIGHT = 180
+WINDOW_BORDER_RADIUS = 10
 
 # ----------------------------------------------------------------------
 # --- THEME AND COLOR DEFINITIONS ---
@@ -718,6 +719,9 @@ class OpenEyeBreakApp(QMainWindow):
         # 7. Apply initial theme to set color constants and style widgets
         self.apply_theme(self.settings['theme'])
 
+        # Apply rounded corners mask
+        self.apply_window_mask()
+
         # 8. Setup QTimer
         self.qtimer = QTimer(self)
         self.qtimer.timeout.connect(self.timer_widget.update_display) 
@@ -761,6 +765,11 @@ class OpenEyeBreakApp(QMainWindow):
         self.timer_widget.update_styles()
         self.settings_widget.update_styles()
     
+    def resizeEvent(self, event):
+        """Re-apply mask when window is resized."""
+        super().resizeEvent(event)
+        self.apply_window_mask()
+
     def set_color_palette(self, theme_name):
         """Applies the QPalette to the main window based on current color constants."""
         if theme_name == "System":
@@ -777,6 +786,17 @@ class OpenEyeBreakApp(QMainWindow):
             palette.setColor(QPalette.ButtonText, QColor(self.FG))
             palette.setColor(QPalette.Highlight, QColor(self.ACCENT))
             self.setPalette(palette)
+
+    def apply_window_mask(self):
+        """Creates a rounded rectangle mask for the frameless window."""
+        path = QPainterPath()
+        path.addRoundedRect(
+            self.rect(), 
+            WINDOW_BORDER_RADIUS,  # corner radius
+            WINDOW_BORDER_RADIUS   # corner radius
+        )
+        mask = QRegion(path.toFillPolygon().toPolygon())
+        self.setMask(mask)
 
     def on_gaming_mode_changed(self, enabled):
         """Called when gaming mode setting changes in settings."""
