@@ -19,6 +19,37 @@ except ImportError:
     print("ERROR: pywin32 not installed. Install with: pip install pywin32")
     sys.exit(1)
 
+import json
+import os
+
+def load_settings_from_file():
+    """
+    Load settings from a config file if it exists.
+    Returns a dictionary of settings to merge with defaults.
+    """
+    config_file = "OpenEyeBreak_settings.json"
+    
+    # Get the directory where the script/executable is located
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    
+    config_path = os.path.join(base_path, config_file)
+    
+    # If file doesn't exist, return empty dict (use defaults)
+    if not os.path.exists(config_path):
+        print(f"Config file not found at {config_path}. Using default settings.")
+        return {}
+    
+    try:
+        with open(config_path, 'r') as f:
+            loaded_settings = json.load(f)
+            print(f"Settings loaded from {config_path}")
+            return loaded_settings
+    except Exception as e:
+        print(f"Error loading config file: {e}. Using default settings.")
+        return {}
 
 # --- APPLICATION CONSTANTS ---
 FULLSCREEN_CHECK_INTERVAL_MS = 500
@@ -640,6 +671,9 @@ class OpenEyeBreakApp(QMainWindow):
     
     def __init__(self):
         super().__init__()
+
+        # Load settings from file if it exists
+        file_settings = load_settings_from_file()
         
         # 1. Default Settings
         self.settings = {
@@ -659,6 +693,9 @@ class OpenEyeBreakApp(QMainWindow):
             'show_advice_short': True
         }
         
+        # Merge file settings into defaults (file settings override defaults)
+        self.settings.update(file_settings)
+
         # Store the base window flags
         self._base_flags = Qt.Window | Qt.FramelessWindowHint
         
